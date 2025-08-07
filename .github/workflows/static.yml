@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gateway</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Poppins -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;700&display=swap" rel="stylesheet">
+    <!-- React Libraries -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel for JSX transpilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Tone.js for audio -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+    <style>
+        body {
+            font-family: 'Poppins', sans-serif;
+        }
+        /* Custom scrollbar hiding */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // --- React Code Starts Here ---
+        
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // --- PWA Setup ---
+        const serviceWorkerCode = `
+          const CACHE_NAME = 'gateway-cache-v1';
+          const urlsToCache = ['/'];
+          self.addEventListener('install', event => {
+            event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache)));
+          });
+          self.addEventListener('fetch', event => {
+            event.respondWith(caches.match(event.request).then(response => response || fetch(event.request)));
+          });
+        `;
+
+        const manifestJson = {
+          "name": "Gateway",
+          "short_name": "Gateway",
+          "start_url": ".",
+          "display": "standalone",
+          "background_color": "#FEFCE8",
+          "theme_color": "#FACC15",
+          "description": "A simple timer for meditation and breathing.",
+          "icons": [
+            { "src": "https://placehold.co/192x192/FACC15/FFFFFF?text=G&font=poppins", "type": "image/png", "sizes": "192x192" },
+            { "src": "https://placehold.co/512x512/FACC15/FFFFFF?text=G&font=poppins", "type": "image/png", "sizes": "512x512" }
+          ]
+        };
+
+        // Helper to format time
+        const formatTime = (seconds) => {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+        };
+
+        // Main App Component
+        const App = () => {
+            const [view, setView] = useState('timer');
+            const [sessions, setSessions] = useState([]);
+
+            useEffect(() => {
+                const manifestBlob = new Blob([JSON.stringify(manifestJson)], { type: 'application/json' });
+                const manifestUrl = URL.createObjectURL(manifestBlob);
+                const linkEl = document.createElement('link');
+                linkEl.rel = 'manifest';
+                linkEl.href = manifestUrl;
+                document.head.appendChild(linkEl);
+
+                if ('serviceWorker' in navigator) {
+                    const swBlob = new Blob([serviceWorkerCode], { type: 'text/javascript' });
+                    const swUrl = URL.createObjectURL(swBlob);
+                    navigator.serviceWorker.register(swUrl).then(reg => console.log('SW registered!', reg)).catch(err => console.log('SW reg failed:', err));
+                }
+                return () => { URL.revokeObjectURL(manifestUrl); };
+            }, []);
+
+            useEffect(() => {
+                try {
+                    const savedSessions = localStorage.getItem('meditationSessions');
+                    if (savedSessions) setSessions(JSON.parse(savedSessions));
+                } catch (error) { console.error("Error loading sessions:", error); }
+            }, []);
+
+            useEffect(() => {
+                try {
+                    localStorage.setItem('meditationSessions', JSON.stringify(sessions));
+                } catch (error) { console.error("Error saving sessions:", error); }
+            }, [sessions]);
+
+            const addSession = useCallback((duration) => {
+                const newSession = { date: new Date().toISOString(), duration: duration };
+                setSessions(prev => [newSession, ...prev]);
+            }, []);
+
+            return (
+                <div className="bg-yellow-50 min-h-screen flex flex-col items-center justify-center text-gray-800">
+                    <div className="w-full max-w-md mx-auto p-4">
+                        <header className="text-center mb-8">
+                            <h1 className="text-4xl font-bold text-yellow-800">Gateway</h1>
+                            <p className="text-yellow-700">Your space for peace and clarity.</p>
+                        </header>
+                        <nav className="flex justify-center mb-8">
+                            <button onClick={() => setView('timer')} className={`px-6 py-2 rounded-l-lg transition-colors ${view === 'timer' ? 'bg-yellow-500 text-white' : 'bg-yellow-200 hover:bg-yellow-300'}`}>Timer</button>
+                            <button onClick={() => setView('progress')} className={`px-6 py-2 rounded-r-lg transition-colors ${view === 'progress' ? 'bg-yellow-500 text-white' : 'bg-yellow-200 hover:bg-yellow-300'}`}>Progress</button>
+                        </nav>
+                        <main className="bg-amber-50 rounded-2xl shadow-lg p-6 md:p-8">
+                            {view === 'timer' ? <Timer addSession={addSession} /> : <Progress sessions={sessions} />}
+                        </main>
+                        <footer className="text-center mt-8 text-yellow-600 text-sm h-4"></footer>
+                    </div>
+                </div>
+            );
+        };
+
+        // Timer Component
+        const Timer = ({ addSession }) => {
+            const [duration, setDuration] = useState(20 * 60);
+            const [bufferDuration, setBufferDuration] = useState(1 * 60);
+            const [sound, setSound] = useState('deepGong');
+            const [timeLeft, setTimeLeft] = useState(duration);
+            const [isActive, setIsActive] = useState(false);
+            const [timerPhase, setTimerPhase] = useState('idle');
+            const intervalRef = useRef(null);
+            const deepGongSynth = useRef(null);
+            const crystalBowlSynth = useRef(null);
+            const scrollRef = useRef(null);
+            const debounceRef = useRef(null);
+            const minutes = Array.from({ length: 60 }, (_, i) => i + 1);
+            const ITEM_HEIGHT = 50;
+
+            useEffect(() => {
+                deepGongSynth.current = new Tone.FMSynth({ harmonicity: 1.4, modulationIndex: 10, oscillator: { type: "sine" }, envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.4 }, modulation: { type: "sawtooth" }, modulationEnvelope: { attack: 0.02, decay: 0.2, sustain: 0.1, release: 0.4 } }).toDestination();
+                crystalBowlSynth.current = new Tone.FMSynth({ harmonicity: 1.2, modulationIndex: 2, oscillator: { type: "sine" }, envelope: { attack: 0.04, decay: 0.2, sustain: 0.1, release: 0.4 }, modulation: { type: "sine" }, modulationEnvelope: { attack: 0.2, decay: 0.1, sustain: 0.2, release: 0.4 } }).toDestination();
+            }, []);
+
+            useEffect(() => {
+                if (scrollRef.current) {
+                    scrollRef.current.scrollTop = (duration / 60 - 1) * ITEM_HEIGHT;
+                }
+            }, []);
+
+            useEffect(() => {
+                if (timerPhase === 'idle' && !isActive) setTimeLeft(duration);
+            }, [duration, timerPhase, isActive]);
+
+            useEffect(() => {
+                if (isActive && timeLeft > 0) {
+                    intervalRef.current = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+                } else {
+                    clearInterval(intervalRef.current);
+                }
+                return () => clearInterval(intervalRef.current);
+            }, [isActive, timeLeft]);
+            
+            const playSound = useCallback(() => {
+                if (Tone.context.state !== 'running') Tone.context.resume();
+                if (sound === 'deepGong') deepGongSynth.current.triggerAttackRelease('C2', '16n', Tone.now());
+                else if (sound === 'crystalBowl') crystalBowlSynth.current.triggerAttackRelease('G4', '16n', Tone.now());
+            }, [sound]);
+
+            useEffect(() => {
+                if (timeLeft > 0 || !isActive) return;
+                playSound();
+                if (timerPhase === 'meditating') {
+                    addSession(duration / 60);
+                    if (bufferDuration > 0) {
+                        setTimerPhase('buffering');
+                        setTimeLeft(bufferDuration);
+                    } else {
+                        setIsActive(false);
+                        setTimerPhase('idle');
+                    }
+                } else if (timerPhase === 'buffering') {
+                    setIsActive(false);
+                    setTimerPhase('idle');
+                }
+            }, [timeLeft, isActive, timerPhase, addSession, duration, bufferDuration, playSound]);
+
+            const toggleTimer = () => {
+                if (Tone.context.state !== 'running') Tone.context.resume();
+                if (isActive) {
+                    setIsActive(false);
+                } else {
+                    if (timerPhase === 'idle') {
+                        setTimerPhase('meditating');
+                        setTimeLeft(duration);
+                    }
+                    setIsActive(true);
+                }
+            };
+
+            const resetTimer = () => {
+                setIsActive(false);
+                setTimerPhase('idle');
+                setTimeLeft(duration);
+            };
+
+            const handleScroll = () => {
+                if (debounceRef.current) clearTimeout(debounceRef.current);
+                debounceRef.current = setTimeout(() => {
+                    if (scrollRef.current && !isActive) {
+                        const selectedIndex = Math.round(scrollRef.current.scrollTop / ITEM_HEIGHT);
+                        setDuration((minutes[selectedIndex] || 1) * 60);
+                    }
+                }, 150);
+            };
+
+            const handleBufferChange = (seconds) => {
+                if (timerPhase === 'idle') setBufferDuration(seconds);
+            };
+
+            const radius = 120;
+            const circumference = 2 * Math.PI * radius;
+            let totalDurationForProgress, progressColorClass;
+            if (timerPhase === 'meditating') { totalDurationForProgress = duration; progressColorClass = 'text-yellow-500'; }
+            else if (timerPhase === 'buffering') { totalDurationForProgress = bufferDuration; progressColorClass = 'text-yellow-400'; }
+            else { totalDurationForProgress = duration; progressColorClass = 'text-yellow-500'; }
+            const progress = totalDurationForProgress > 0 ? ((totalDurationForProgress - timeLeft) / totalDurationForProgress) * circumference : 0;
+
+            return (
+                <div className="flex flex-col items-center justify-center">
+                    <div className="relative w-64 h-64 flex items-center justify-center mb-6">
+                        <svg className="absolute w-full h-full" viewBox="0 0 280 280">
+                            <circle className="text-gray-200" stroke="currentColor" strokeWidth="10" fill="transparent" r={radius} cx="140" cy="140"/>
+                            <circle className={progressColorClass} stroke="currentColor" strokeWidth="10" fill="transparent" r={radius} cx="140" cy="140" strokeDasharray={circumference} strokeDashoffset={circumference - progress} transform="rotate(-90 140 140)" style={{ transition: 'stroke-dashoffset 0.5s linear' }}/>
+                        </svg>
+                        <div className="text-center">
+                            <div className="text-sm text-gray-500 mb-2 uppercase tracking-wider font-semibold h-4">{timerPhase !== 'idle' ? timerPhase : ''}</div>
+                            <div className="text-6xl font-mono text-gray-700 z-10">{formatTime(timeLeft)}</div>
+                        </div>
+                    </div>
+                    <div className="space-y-6 w-full text-center">
+                        <div>
+                            <label className="text-sm font-semibold text-gray-600">Breathing Time</label>
+                            <div className="relative h-40 w-32 mx-auto mt-2">
+                                <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-scroll snap-y snap-mandatory no-scrollbar rounded-lg bg-yellow-100/50">
+                                    <div className="pt-[60px] pb-[60px]">
+                                        {minutes.map(minute => <div key={minute} className="h-[50px] flex items-center justify-center text-2xl snap-center text-yellow-800">{minute}</div>)}
+                                    </div>
+                                </div>
+                                <div className="absolute top-1/2 left-0 w-full h-[50px] -translate-y-1/2 border-y-2 border-yellow-400 pointer-events-none rounded-lg"></div>
+                            </div>
+                        </div>
+                        <div className="flex justify-center space-x-4">
+                            <button onClick={toggleTimer} className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-8 rounded-full transition-transform transform hover:scale-105">{isActive ? 'Pause' : 'Start'}</button>
+                            <button onClick={resetTimer} className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-3 px-8 rounded-full transition-transform transform hover:scale-105">Reset</button>
+                        </div>
+                        <div>
+                            <label className="text-sm font-semibold text-gray-600">Extra Breath</label>
+                            <div className="flex justify-center space-x-2 mt-2">
+                                <button onClick={() => handleBufferChange(0)} className={`px-4 py-2 rounded-full text-sm ${bufferDuration === 0 ? 'bg-yellow-400 text-white' : 'bg-gray-200'}`}>None</button>
+                                <button onClick={() => handleBufferChange(1 * 60)} className={`px-4 py-2 rounded-full text-sm ${bufferDuration === 1 * 60 ? 'bg-yellow-400 text-white' : 'bg-gray-200'}`}>1 min</button>
+                                <button onClick={() => handleBufferChange(3 * 60)} className={`px-4 py-2 rounded-full text-sm ${bufferDuration === 3 * 60 ? 'bg-yellow-400 text-white' : 'bg-gray-200'}`}>3 min</button>
+                            </div>
+                        </div>
+                        <div>
+                            <div className="flex items-center justify-center mb-2">
+                                <label className="text-sm font-semibold text-gray-600 mr-2">Sound</label>
+                                <button onClick={playSound} className="p-2 rounded-full bg-gray-200 hover:bg-gray-300 transition" aria-label="Preview sound">
+                                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
+                                </button>
+                            </div>
+                            <div className="flex justify-center space-x-2">
+                                <button onClick={() => setSound('deepGong')} className={`px-4 py-2 rounded-full text-sm ${sound === 'deepGong' ? 'bg-yellow-400 text-white' : 'bg-gray-200'}`}>Deep Gong</button>
+                                <button onClick={() => setSound('crystalBowl')} className={`px-4 py-2 rounded-full text-sm ${sound === 'crystalBowl' ? 'bg-yellow-400 text-white' : 'bg-gray-200'}`}>Crystal Bowl</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Progress Component
+        const Progress = ({ sessions }) => {
+            const [reflection, setReflection] = useState('');
+            const [isLoading, setIsLoading] = useState(false);
+            const [error, setError] = useState('');
+
+            const handleGenerateReflection = async () => {
+                setIsLoading(true);
+                setError('');
+                setReflection('');
+                const totalMinutes = sessions.reduce((total, session) => total + session.duration, 0);
+                const totalSessions = sessions.length;
+                const prompt = `You are a gentle and encouraging mindfulness coach. A user has completed ${totalSessions} meditation sessions for a total of ${totalMinutes} minutes. Write a short, calming, and insightful reflection (2-3 sentences) on their consistency and dedication. Focus on the positive benefits of building a regular practice. Do not use markdown.`;
+
+                try {
+                    let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+                    const payload = { contents: chatHistory };
+                    const apiKey = "";
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                    const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    if (!response.ok) throw new Error(`API request failed with status ${response.status}`);
+                    const result = await response.json();
+                    if (result.candidates?.[0]?.content?.parts?.[0]?.text) {
+                        setReflection(result.candidates[0].content.parts[0].text);
+                    } else {
+                        throw new Error("Unexpected API response structure.");
+                    }
+                } catch (err) {
+                    console.error("Error generating reflection:", err);
+                    setError("Sorry, I couldn't generate a reflection right now. Please try again later.");
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            if (sessions.length === 0) {
+                return <p className="text-center text-gray-500">No meditation sessions logged yet. Start a session to see your progress!</p>;
+            }
+
+            const totalMinutes = sessions.reduce((total, session) => total + session.duration, 0);
+            const totalSessions = sessions.length;
+
+            return (
+                <div>
+                    <h2 className="text-2xl font-bold text-center mb-6 text-yellow-800">Your Progress</h2>
+                    <div className="grid grid-cols-2 gap-4 text-center mb-8">
+                        <div><p className="text-3xl font-bold text-yellow-500">{totalSessions}</p><p className="text-yellow-700">Total Sessions</p></div>
+                        <div><p className="text-3xl font-bold text-yellow-500">{totalMinutes}</p><p className="text-yellow-700">Total Minutes</p></div>
+                    </div>
+                    <div className="text-center my-6">
+                        <button onClick={handleGenerateReflection} disabled={isLoading} className="bg-yellow-400 hover:bg-yellow-500 text-white font-bold py-2 px-4 rounded-full transition-transform transform hover:scale-105 disabled:bg-gray-300 disabled:scale-100">
+                            {isLoading ? 'Thinking...' : '✨ Reflect on My Progress'}
+                        </button>
+                    </div>
+                    {error && <p className="text-center text-red-500 mt-4">{error}</p>}
+                    {reflection && <div className="mt-6 p-4 bg-yellow-100/50 rounded-lg shadow-inner"><p className="text-yellow-800 text-center italic">{reflection}</p></div>}
+                    <h3 className="text-xl font-semibold my-4 text-yellow-800">Recent Sessions</h3>
+                    <ul className="space-y-3 max-h-64 overflow-y-auto">
+                        {sessions.map((session, index) => (
+                            <li key={index} className="flex justify-between items-center bg-yellow-50 p-3 rounded-lg">
+                                <span className="font-medium text-yellow-800">{new Date(session.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
+                                <span className="text-yellow-700">{session.duration} min</span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            );
+        };
+
+        // Mount the app
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
